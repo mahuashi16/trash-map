@@ -497,8 +497,15 @@
 (function () {
   'use strict';
 
+  /* 云端接口挂在原域名下，且服务端不支持 CORS 预检（带 Authorization 的跨域请求会被浏览器拦）。
+     因此：部署在带服务端代理的平台时（Netlify，见同目录 _redirects），改用同源相对路径，
+     由 CDN 把 /.cloud/* 转发到云端 —— 浏览器眼里是同源请求，不需要 CORS。
+     其它托管（GitHub Pages 等无代理）仍直连原域名。 */
+  var _HOST = location.hostname;
+  var SAME_ORIGIN_API = /\.netlify\.app$/i.test(_HOST) || _HOST === 'localhost' || _HOST === '127.0.0.1';
+
   var PUBLIC_CONFIG = {
-    endpoint: 'https://campus-trash-map.app.workbuddy.host',
+    endpoint: SAME_ORIGIN_API ? location.origin : 'https://campus-trash-map.app.workbuddy.host',
     oauthRelayBaseUrl: 'https://www.workbuddy.cn/v2/as/genie-baas/oauth',
     publishableKey: 'wbpk_HUxWD6IJY9N7kl6581NxvF_MU1gPUIZauAV5G36HfFkrdPM4SRVNhUK'
   };

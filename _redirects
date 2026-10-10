@@ -1,0 +1,5 @@
+# Netlify 代理规则：把 /.cloud/* 同源转发到云端接口
+# 目的：云端接口不支持 CORS 预检（跨域带 Authorization 会被浏览器拦下），
+#      由 Netlify 的 CDN 在服务端转发，浏览器端变成同源请求，彻底绕开 CORS。
+# 200! 表示强制 rewrite（不改变浏览器地址栏，且优先于站点内同名文件）
+/.cloud/*  https://campus-trash-map.app.workbuddy.host/.cloud/:splat  200!
