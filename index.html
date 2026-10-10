@@ -1,0 +1,1830 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>校园垃圾桶标记</title>
+<link rel="stylesheet" href="./vendor/leaflet.css">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body { color: #16211c; background: #f2f4f3; }
+
+  #map { position: fixed; inset: 0; z-index: 1; background: #eef1ef; }
+
+  /* 底图简约化：整体降饱和，让绿植/水面/POI 图标都变成低饱和的浅色，
+     我们自己的标记（圆形照片 + 编号）才会从背景里跳出来。 */
+  .leaflet-tile-pane { filter: saturate(.42) contrast(.96) brightness(1.04); }
+  .leaflet-control-attribution { background: rgba(255,255,255,.7) !important; font-size: 9px; }
+  /* 地图控件要避让上下两条固定栏：缩放按钮抬到 Tab 栏之上，右下角署名同样让开，
+     否则会被底部导航压住、点不到。 */
+  .leaflet-bottom.leaflet-left { bottom: calc(env(safe-area-inset-bottom, 0px) + 64px); }
+  .leaflet-bottom.leaflet-right { bottom: calc(env(safe-area-inset-bottom, 0px) + 64px); }
+  .leaflet-control-zoom { border: none !important; box-shadow: 0 2px 10px rgba(0,0,0,.2); }
+  /* 触摸设备上 Leaflet 自带规则会把按钮缩到 30px，这里提高优先级改成 40px 好点按 */
+  .leaflet-control-zoom a,
+  .leaflet-touch .leaflet-control-zoom a { width: 40px; height: 40px; line-height: 40px; font-size: 22px;
+    background: #fff; color: #2b3a33; }
+  .leaflet-control-zoom a:hover { background: #f2f6f4; color: #14634a; }
+  .leaflet-control-zoom a:first-child { border-radius: 12px 12px 0 0; }
+  .leaflet-control-zoom a:last-child { border-radius: 0 0 12px 12px; }
+
+  /* ---------- 顶部状态栏 ---------- */
+  .topbar { position: fixed; z-index: 500; top: calc(env(safe-area-inset-top, 0px) + 10px);
+    left: 10px; right: 10px; display: flex; gap: 8px; align-items: flex-start; pointer-events: none; }
+  .chip { pointer-events: auto; background: #fff; border-radius: 10px; padding: 7px 12px;
+    font-size: 12px; line-height: 1.3; box-shadow: 0 2px 10px rgba(0,0,0,.14); white-space: nowrap; }
+  .chip b { font-weight: 600; color: #1f8a5f; }
+  .chip.warn b { color: #c2410c; }
+  .chip .sub { color: #7b8a83; font-size: 11px; }
+  .spacer { flex: 1; }
+
+  /* ---------- 底部按钮 ---------- */
+  .fab { position: fixed; z-index: 500; right: 16px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);
+    width: 62px; height: 62px; border-radius: 50%; border: none; background: #1f8a5f; color: #fff;
+    font-size: 30px; line-height: 1; box-shadow: 0 4px 16px rgba(31,138,95,.45);
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    will-change: transform; }
+  .fab:active { transform: scale(.94); }
+  .fab[disabled] { background: #9aa8a2; box-shadow: none; }
+
+  .tabbar { position: fixed; z-index: 500; left: 0; right: 0; bottom: 0;
+    display: flex; background: #fff; border-top: 1px solid #e3e7e5;
+    padding-bottom: env(safe-area-inset-bottom, 0px); will-change: transform; }
+  .tabbar button { flex: 1; border: none; background: none; padding: 9px 0 10px;
+    font-size: 11px; color: #7b8a83; cursor: pointer; font-family: inherit; }
+  .tabbar button.on { color: #1f8a5f; font-weight: 600; }
+  .tabbar .ico { display: block; font-size: 17px; margin-bottom: 2px; line-height: 1; }
+
+  /* ---------- 底部面板 ---------- */
+  .sheet { position: fixed; z-index: 600; left: 0; right: 0; bottom: 0;
+    background: #fff; border-radius: 18px 18px 0 0; box-shadow: 0 -6px 28px rgba(0,0,0,.18);
+    transform: translateY(101%); visibility: hidden;
+    transition: transform .26s cubic-bezier(.32,.72,0,1), visibility .26s;
+    max-height: 86vh; display: flex; flex-direction: column;
+    padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .sheet.open { transform: translateY(0); visibility: visible; }
+  .sheet-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; flex: none; }
+  .sheet-head h2 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; }
+  .sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 16px 18px; }
+  .x { border: none; background: #f0f3f1; width: 28px; height: 28px; border-radius: 50%;
+    font-size: 15px; color: #5c6b64; cursor: pointer; flex: none; }
+
+  /* ---------- 表单 ---------- */
+  label.f { display: block; font-size: 12px; color: #6b7a73; margin: 14px 0 6px; }
+  .hint { font-size: 11px; color: #97a49e; margin-top: 5px; line-height: 1.5; }
+  .hint.warn { color: #c2410c; background: #fff4ec; border-radius: 8px; padding: 6px 9px; }
+  input[type=text], input[type=tel], input[type=password], textarea {
+    width: 100%; border: 1px solid #dde3e0; border-radius: 10px; padding: 11px 12px;
+    font-size: 16px; font-family: inherit; color: #16211c; background: #fafbfa; outline: none; }
+  input:focus, textarea:focus { border-color: #1f8a5f; background: #fff; }
+  textarea { resize: none; min-height: 62px; line-height: 1.5; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .btn { border: none; border-radius: 11px; padding: 13px; font-size: 15px; font-weight: 600;
+    font-family: inherit; cursor: pointer; }
+  .btn-main { background: #1f8a5f; color: #fff; width: 100%; margin-top: 16px; }
+  .btn-main:active { background: #19704d; }
+  .btn-main[disabled] { background: #b6c3bd; }
+  .btn-ghost { background: #f0f3f1; color: #3d4a44; }
+  .btn-mini { border: none; background: #f0f3f1; color: #3d4a44; border-radius: 9px;
+    padding: 9px 14px; font-size: 13px; font-family: inherit; cursor: pointer; }
+  .btn-danger { background: #fdeceb; color: #b91c1c; }
+  .err { color: #c2410c; font-size: 12px; margin-top: 7px; min-height: 15px; }
+
+  .coord { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
+    background: #f0f3f1; border-radius: 9px; padding: 10px 12px; color: #2b3a33; }
+  .coord .acc { color: #1f8a5f; font-weight: 600; }
+  .coord .acc.bad { color: #c2410c; }
+
+  /* ---------- 照片选择 ---------- */
+  .photopick { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .photopick .prev { flex: none; width: 64px; height: 64px; border-radius: 50%;
+    border: 2px solid #dde3e0; background: #e7efe9; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    color: #9aa8a2; font-size: 24px; }
+  .photopick .prev img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .photopick .meta { flex: 1; min-width: 0; font-size: 12px; color: #6b7a73; line-height: 1.6; }
+  .btn-mini.danger { background: #fdeceb; color: #b91c1c; margin-left: 8px; }
+  /* 底图切换分段按钮 */
+  .seg { display: flex; gap: 8px; margin-top: 8px; }
+  .seg button { flex: 1; border: 1.5px solid #d6e0da; background: #fff; color: #4a5a52;
+    border-radius: 10px; padding: 10px 0; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .seg button.on { border-color: #1f8a5f; background: #e6f4ee; color: #14634a; }
+  /* 视觉隐藏的文件输入：保留在渲染树里，确保合成 click() 在任何移动端都能唤起相机/相册 */
+  .filehide { position: absolute; width: 1px; height: 1px; opacity: 0;
+    border: 0; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  /* ---------- 列表 ---------- */
+  .item { display: flex; gap: 11px; padding: 12px 0; border-bottom: 1px solid #eef1ef; }
+  .item:last-child { border-bottom: none; }
+  .item .dot { flex: none; width: 34px; height: 34px; border-radius: 50%; background: #e6f4ee;
+    color: #1f8a5f; font-size: 10px; font-weight: 700; display: flex; align-items: center;
+    justify-content: center; text-align: center; line-height: 1.05; padding: 2px; word-break: break-all;
+    background-size: cover; background-position: center; }
+  .item .dot.photo { color: transparent; border: 2px solid #fff;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.1); }
+  .dphoto { width: 104px; height: 104px; border-radius: 50%; object-fit: cover; display: block;
+    border: 3px solid #fff; box-shadow: 0 2px 12px rgba(0,0,0,.2); margin: 2px auto 12px; }
+  .dphoto[hidden] { display: none; }
+  .item .body { flex: 1; min-width: 0; }
+  .item .t1 { font-size: 14px; font-weight: 600; }
+  .item .t2 { font-size: 12px; color: #6b7a73; margin-top: 3px; word-break: break-word; line-height: 1.5; }
+  .item .t3 { font-size: 11px; color: #a3afaa; margin-top: 5px; font-family: ui-monospace, Menlo, monospace; }
+  .empty { text-align: center; color: #97a49e; font-size: 13px; padding: 40px 20px; line-height: 1.7; }
+
+  /* ---------- 地图标记：圆形照片 + 下方编号 ---------- */
+  .bin-marker { width: 0 !important; height: 0 !important; }
+  .bin-marker .ph { position: absolute; left: 0; top: 0; transform: translate(-50%,-50%);
+    width: 44px; height: 44px; border-radius: 50%; overflow: hidden;
+    border: 3px solid #fff; background: #e7efe9;
+    box-shadow: 0 2px 8px rgba(0,0,0,.28); }
+  .bin-marker .ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .bin-marker .ph .nopic { width: 100%; height: 100%; display: flex; align-items: center;
+    justify-content: center; background: linear-gradient(160deg, #dfeae3, #c8dbd0); color: #7d8f85; }
+  .bin-marker .code { position: absolute; left: 0; top: 25px; transform: translateX(-50%);
+    white-space: nowrap; padding: 2px 8px; border-radius: 999px; background: #fff; color: #1c2721;
+    font-size: 11px; font-weight: 700; letter-spacing: .3px;
+    border: 1px solid rgba(0,0,0,.07); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+  .bin-marker.active .ph { border-color: #b45309; }
+  .bin-marker.active .code { background: #b45309; border-color: #b45309; color: #fff; }
+  .draft-marker { width: 0 !important; height: 0 !important; }
+  .draft-marker .pin { position: absolute; left: 0; top: 0; transform: translate(-50%,-50%);
+    white-space: nowrap; padding: 4px 10px; border-radius: 999px; background: #ea580c; color: #fff;
+    font-size: 11px; font-weight: 600; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(234,88,12,.5); }
+
+  /* ---------- 我的位置（蓝点） ---------- */
+  .me-marker { width: 0 !important; height: 0 !important; }
+  .me-marker .dot { position: absolute; left: 0; top: 0; width: 16px; height: 16px;
+    border-radius: 50%; background: #1a73e8; border: 3px solid #fff;
+    transform: translate(-50%,-50%); box-shadow: 0 1px 5px rgba(0,0,0,.4); pointer-events: none; }
+  .me-marker .pulse { position: absolute; left: 0; top: 0; width: 18px; height: 18px;
+    border-radius: 50%; background: rgba(26,115,232,.34); transform: translate(-50%,-50%);
+    will-change: transform, opacity; animation: mePulse 2.4s ease-out infinite; pointer-events: none; }
+  @keyframes mePulse {
+    0%   { transform: translate(-50%,-50%) scale(1); opacity: .55; }
+    70%  { transform: translate(-50%,-50%) scale(3); opacity: 0; }
+    100% { transform: translate(-50%,-50%) scale(3); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .me-marker .pulse { animation: none; opacity: .22; }
+  }
+
+  /* ---------- 定位按钮 ---------- */
+  .locate { position: fixed; z-index: 500; right: 16px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 164px);
+    width: 46px; height: 46px; border-radius: 50%; border: none; background: #fff; color: #1a73e8;
+    box-shadow: 0 2px 10px rgba(0,0,0,.22); display: flex; align-items: center; justify-content: center;
+    cursor: pointer; will-change: transform; padding: 0; }
+  .locate:active { transform: scale(.94); }
+  .locate.busy { color: #9aa8a2; }
+  .locate.out { color: #c2410c; }
+
+  .toast { position: fixed; z-index: 900; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: rgba(22,33,28,.9); color: #fff; padding: 11px 18px; border-radius: 10px;
+    font-size: 13px; max-width: 78vw; text-align: center; line-height: 1.5; opacity: 0;
+    transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+
+  /* ---------- 开屏 / 登录界面（登录提到开屏页） ---------- */
+  .splash { position: fixed; inset: 0; z-index: 1000; background: #f4f8f5;
+    display: flex; justify-content: center; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding: 22px 20px; text-align: center; transition: opacity .45s ease, visibility .45s; }
+  .splash.hide { opacity: 0; visibility: hidden; pointer-events: none; }
+  .splash .box { max-width: 400px; width: 100%; margin: auto; }
+  .splash .emblem { width: 74px; height: 74px; display: block; margin: 0 auto 12px; }
+  .splash h1 { margin: 0 0 5px; font-size: 19px; font-weight: 700; color: #14301f; letter-spacing: 2px; }
+  .splash .sub { margin: 0 0 16px; font-size: 11px; color: #8b9c93; letter-spacing: 3px; }
+  .splash .slogan { margin: 0 0 18px; font-size: 15px; line-height: 1.85; color: #2e4237; }
+  .splash .authcard { background: #fff; border-radius: 16px; padding: 16px;
+    box-shadow: 0 2px 14px rgba(20,48,31,.07); text-align: left; }
+  .splash .orline { display: flex; align-items: center; gap: 10px; margin: 13px 0;
+    color: #aab6b0; font-size: 11px; }
+  .splash .orline::before, .splash .orline::after { content: ''; flex: 1; height: 1px; background: #eef1ef; }
+  .splash .enter { display: block; width: 100%; margin-top: 12px; padding: 14px; border-radius: 14px;
+    border: 1.5px dashed #c3d4ca; background: #fff; color: #4a5a52;
+    font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer; }
+  .splash .enter:active { background: #eef5f1; }
+  .splash .foot { margin: 16px 0 0; font-size: 11px; color: #9daca4; line-height: 1.7; }
+  .splash .wxnote { margin: 16px 0 0; font-size: 12px; line-height: 1.7; color: #b45309;
+    background: #fff6ec; border: 1px solid #f3d9bd; border-radius: 10px; padding: 10px 12px; text-align: left; }
+
+  /* ---------- 二维码（我的面板） ---------- */
+  .qrbox { margin: 12px auto 0; width: 186px; max-width: 72%; }
+  .qrbox img { width: 100%; display: block; border-radius: 10px;
+    border: 1px solid #e6ebe8; background: #fff; }
+
+  .mask { position: fixed; inset: 0; z-index: 700; background: rgba(15,25,20,.45);
+    display: none; align-items: center; justify-content: center; padding: 20px; }
+  .mask.open { display: flex; }
+  .card { background: #fff; border-radius: 16px; padding: 20px; width: 100%; max-width: 380px;
+    max-height: 88vh; overflow-y: auto; }
+  .card h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+  .card p.s { margin: 0; font-size: 12px; color: #7b8a83; line-height: 1.6; }
+  .sep { height: 1px; background: #eef1ef; margin: 16px 0; }
+  .who { font-size: 12px; color: #6b7a73; display: flex; align-items: center; gap: 6px; }
+  .who b { color: #16211c; }
+  .actions { display: flex; gap: 8px; margin-top: 16px; }
+  .actions > * { flex: 1; }
+  .dash { height: 1px; background: #eef1ef; margin: 14px 0; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="topbar">
+  <div class="chip" id="chipCount">已标记 <b>0</b> 个</div>
+  <div class="chip" id="chipGps" style="display:none"><b>定位中…</b></div>
+  <div class="spacer"></div>
+  <div class="chip" id="chipUser" style="display:none"><b id="userName"></b></div>
+</div>
+
+<button class="locate" id="btnLocate" title="回到我的位置" aria-label="回到我的位置">
+  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+    <circle cx="12" cy="12" r="6.4" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+    <path d="M12 1.6v3.9M12 18.5v3.9M1.6 12h3.9M18.5 12h3.9" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round"/>
+  </svg>
+</button>
+<button class="fab" id="fabMark" title="标记新垃圾桶">＋</button>
+
+<div class="tabbar">
+  <button id="tabMap" class="on"><span class="ico">◎</span>地图</button>
+  <button id="tabList"><span class="ico">☰</span>清单</button>
+  <button id="tabMe"><span class="ico">◍</span>我的</button>
+</div>
+
+<!-- 标记面板 -->
+<div class="sheet" id="sheetMark">
+  <div class="sheet-head">
+    <h2>标记这个垃圾桶</h2>
+    <button class="x" data-close="sheetMark">✕</button>
+  </div>
+  <div class="sheet-body">
+    <div class="coord" id="markCoord">正在定位…</div>
+    <div class="hint" id="markHint">站到垃圾桶旁边，等坐标稳定后保存。地图上的橙点可以直接拖动微调。</div>
+
+    <label class="f">编号</label>
+    <input type="text" id="mCode" placeholder="如 108" inputmode="numeric" autocomplete="off">
+    <div class="hint">统一用三位数（108、314、520…），留空会自动接在上一个编号后面。</div>
+
+    <label class="f">桶的照片（会显示成地图上的圆形图标）</label>
+    <div class="photopick">
+      <div class="prev" id="mPhotoPrev">📷</div>
+      <div class="meta">
+        <button type="button" class="btn-mini" id="btnMCam">拍照</button>
+        <button type="button" class="btn-mini" id="btnMPick">从相册选</button>
+        <button type="button" class="btn-mini danger" id="btnMClear" hidden>移除</button>
+        <div class="hint" style="margin-top:6px">自动裁成正圆并压缩（约 10 KB）。首次点击时浏览器会询问相机 / 照片权限，请选「允许」。</div>
+        <div class="hint warn" id="mPhotoWx" hidden>微信内可能调不起相机，请改用「从相册选」，或点右上角「···」→ 在浏览器打开。</div>
+      </div>
+    </div>
+
+    <label class="f">一小段话（可选）</label>
+    <textarea id="mNote" placeholder="如：二教门口左侧，桶盖有点松"></textarea>
+
+    <button class="btn btn-main" id="btnSave">保存标记</button>
+    <div class="err" id="markErr"></div>
+    <div class="actions">
+      <button class="btn-ghost btn" id="btnRelocate">重新定位</button>
+      <button class="btn-ghost btn" id="btnCancelMark">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 详情面板 -->
+<div class="sheet" id="sheetDetail">
+  <div class="sheet-head">
+    <h2 id="dCode">—</h2>
+    <button class="x" data-close="sheetDetail">✕</button>
+  </div>
+  <div class="sheet-body">
+    <img class="dphoto" id="dPhoto" alt="" hidden>
+    <div class="item" style="border:none;padding:0">
+      <div class="body">
+        <div class="t2" id="dNote" style="font-size:13px"></div>
+        <div class="t3" id="dCoord"></div>
+        <div class="t3" id="dTime"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn-ghost btn" id="btnEdit">编辑</button>
+      <button class="btn btn-danger" id="btnDelete">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 编辑面板 -->
+<div class="sheet" id="sheetEdit">
+  <div class="sheet-head">
+    <h2>编辑</h2>
+    <button class="x" data-close="sheetEdit">✕</button>
+  </div>
+  <div class="sheet-body">
+    <label class="f">编号</label>
+    <input type="text" id="eCode" autocomplete="off">
+    <label class="f">桶的照片</label>
+    <div class="photopick">
+      <div class="prev" id="ePhotoPrev">📷</div>
+      <div class="meta">
+        <button type="button" class="btn-mini" id="btnECam">拍照</button>
+        <button type="button" class="btn-mini" id="btnEPick">从相册选</button>
+        <button type="button" class="btn-mini danger" id="btnEClear" hidden>移除</button>
+        <div class="hint warn" id="ePhotoWx" hidden>微信内可能调不起相机，请改用「从相册选」，或点右上角「···」→ 在浏览器打开。</div>
+      </div>
+    </div>
+    <label class="f">一小段话</label>
+    <textarea id="eNote"></textarea>
+    <button class="btn btn-main" id="btnEditSave">保存修改</button>
+    <div class="err" id="editErr"></div>
+  </div>
+</div>
+
+<!-- 清单面板 -->
+<div class="sheet" id="sheetList">
+  <div class="sheet-head">
+    <h2>全部标记 <span id="listCount" style="color:#97a49e;font-weight:400"></span></h2>
+    <button class="x" data-close="sheetList">✕</button>
+  </div>
+  <div class="sheet-body" id="listBody"></div>
+</div>
+
+<!-- 我的面板 -->
+<div class="sheet" id="sheetMe">
+  <div class="sheet-head">
+    <h2>我的</h2>
+    <button class="x" data-close="sheetMe">✕</button>
+  </div>
+  <div class="sheet-body">
+    <div class="who" id="meWho"></div>
+    <div class="dash"></div>
+    <div class="item" style="border:none;padding:0">
+      <div class="body">
+        <div class="t1">我标记了 <span id="meMine">0</span> 个</div>
+        <div class="t2">全校共 <span id="meTotal">0</span> 个标记点</div>
+      </div>
+    </div>
+    <div class="dash"></div>
+    <div class="item" style="border:none;padding:0">
+      <div class="body">
+        <div class="t1">地图底图</div>
+        <div class="seg" id="segBase">
+          <button type="button" data-v="amap">高德</button>
+          <button type="button" data-v="tdt">极简 · 无文字</button>
+        </div>
+        <!-- 开发者模式：Key 与安全密钥只在这里开放，避免同学误改 -->
+        <div id="devGate" style="margin-top:12px">
+          <button class="btn-ghost btn" id="btnDevOpen" style="width:100%">开发者模式</button>
+          <div id="devPwdRow" hidden style="margin-top:8px">
+            <div class="row">
+              <input type="password" id="devPwd" placeholder="开发者口令" inputmode="numeric" autocomplete="off">
+              <button type="button" class="btn-ghost btn" id="btnDevUnlock" style="flex:0 0 86px;font-size:14px;padding:11px 6px">解锁</button>
+            </div>
+            <div class="err" id="devErr"></div>
+          </div>
+        </div>
+        <div id="tdtBox" hidden>
+          <label class="f" style="margin-top:12px">天地图 Key</label>
+          <div class="row" style="margin-top:6px">
+            <input type="text" id="tdtKey" placeholder="粘贴天地图浏览器端 Key" autocomplete="off">
+          </div>
+          <label class="f" style="margin-top:10px">安全密钥 sk（可选，开了才填）</label>
+          <div class="row" style="margin-top:6px">
+            <input type="text" id="tdtSk" placeholder="留空表示未启用安全密钥" autocomplete="off">
+            <button type="button" class="btn-mini" id="btnTdtSave">保存</button>
+          </div>
+          <div class="hint" id="devHint" style="margin-top:10px"></div>
+          <button type="button" class="btn-mini" id="btnDevLock" style="margin-top:10px">退出开发者模式</button>
+        </div>
+        <div class="hint" id="baseHint" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn-ghost btn" id="btnExport">导出 CSV</button>
+      <button class="btn-ghost btn" id="btnLogout">登录 / 注册</button>
+    </div>
+    <div class="dash"></div>
+    <div class="item" style="border:none;padding:0">
+      <div class="body">
+        <div class="t1">扫码分享</div>
+        <div class="t2">同学扫一下就能打开这个地图</div>
+        <div class="qrbox"><img id="qrImg" src="./vendor/qr-site.png" alt="扫码打开垃圾桶编号地图"></div>
+        <div class="actions">
+          <button class="btn-ghost btn" id="btnCopyLink">复制链接</button>
+          <button class="btn-ghost btn" id="btnQrSave">保存二维码</button>
+        </div>
+        <div class="hint" style="margin-top:10px">
+          微信里打开会提示「请在浏览器中打开」——点右上角「···」→「在浏览器打开」即可。
+          用手机<b>相机</b>（而不是微信扫一扫）扫码则直接进入。
+        </div>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:16px">
+      网页会记住你上次看的位置。换了手机或清了缓存，标记记录都还在云端。
+    </div>
+  </div>
+</div>
+
+<!-- 登录（点「标记」时若未登录弹出；手机号优先，不用扫码） -->
+<div class="mask" id="maskLogin">
+  <div class="card">
+    <h2>登录后才能标记</h2>
+    <p class="s">标记记录会存到你的账号里，换手机也在。登录一次，之后长期有效。</p>
+    <div class="sep"></div>
+    <label class="f" style="margin-top:0">手机号登录（不用扫码）</label>
+    <input type="tel" id="lPhone" placeholder="11 位手机号" autocomplete="tel">
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="lCode" placeholder="验证码" autocomplete="one-time-code">
+      <button type="button" class="btn-ghost btn" id="btnSendCode" style="flex:0 0 110px;padding:11px 6px;font-size:13px">获取验证码</button>
+    </div>
+    <div class="err" id="loginErr"></div>
+    <button class="btn btn-main" id="btnPhoneLogin">登录 / 注册</button>
+    <div id="mWxWrap">
+      <div class="sep"></div>
+      <button class="btn btn-ghost" id="btnWechat" style="width:100%">微信扫码登录</button>
+      <div class="hint" style="text-align:center;margin-top:7px">要用微信「扫一扫」授权</div>
+    </div>
+    <button class="btn btn-ghost" id="btnCloseLogin" style="width:100%;margin-top:8px">以后再说</button>
+  </div>
+</div>
+
+<!-- 照片选择：带 capture 的直接调相机，不带 capture 的走相册/文件。
+     用视觉隐藏而非 hidden 属性，避免部分移动端浏览器拒绝合成点击。 -->
+<input type="file" class="filehide" id="mPhotoCam" accept="image/*" capture="environment">
+<input type="file" class="filehide" id="mPhotoLib" accept="image/*">
+<input type="file" class="filehide" id="ePhotoCam" accept="image/*" capture="environment">
+<input type="file" class="filehide" id="ePhotoLib" accept="image/*">
+
+<div class="splash" id="splash">
+  <div class="box">
+    <img class="emblem" src="./vendor/sysu/emblem-green.svg" alt="中山大学校徽">
+    <h1>垃圾桶编号地图</h1>
+    <div class="sub">SUN YAT-SEN UNIVERSITY</div>
+    <p class="slogan">中山大学的垃圾桶很多，<br>不知大家是否注意过它们的编号？</p>
+
+    <div class="authcard">
+      <label class="f" style="margin-top:0">手机号登录（不用扫码）</label>
+      <input type="tel" id="sPhone" placeholder="11 位手机号" autocomplete="tel">
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="sCode" placeholder="验证码" autocomplete="one-time-code">
+        <button type="button" class="btn-ghost btn" id="sBtnSend" style="flex:0 0 110px;padding:11px 6px;font-size:13px">获取验证码</button>
+      </div>
+      <div class="err" id="splashErr"></div>
+      <button class="btn btn-main" id="sBtnLogin">登录 / 注册</button>
+      <div class="hint" style="text-align:center;margin-top:9px">标记会存进你的账号，换手机也在；登录一次长期有效</div>
+      <div id="sWxWrap">
+        <div class="orline">或</div>
+        <button class="btn btn-ghost" id="sBtnWechat" style="width:100%">微信扫码登录</button>
+        <div class="hint" style="text-align:center;margin-top:7px">要用微信「扫一扫」授权，扫一次之后长期有效</div>
+      </div>
+    </div>
+
+    <button class="enter" id="btnEnter">游客进入 · 先随便逛逛</button>
+    <p class="wxnote" id="splashWx" hidden>检测到您在微信内打开。定位和相机在这里会被限制，建议点右上角「···」→「在浏览器打开」。登录请用手机号——微信里没法完成扫码登录，所以微信登录入口已隐藏。</p>
+    <p class="foot">中山大学南校园 · 垃圾桶位置与编号记录<br>校徽版权归中山大学所有，仅作校园学习用途</p>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="./vendor/leaflet.js"></script>
+<script src="./vendor/cloud-sdk.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var PUBLIC_CONFIG = {
+    endpoint: 'https://campus-trash-map.app.workbuddy.host',
+    oauthRelayBaseUrl: 'https://www.workbuddy.cn/v2/as/genie-baas/oauth',
+    publishableKey: 'wbpk_HUxWD6IJY9N7kl6581NxvF_MU1gPUIZauAV5G36HfFkrdPM4SRVNhUK'
+  };
+
+  var CAMPUS = { lat: 23.0995, lng: 113.2945 };  // 中大南校园（康乐园）中心，WGS-84
+  // 边界（WGS-84）。以校园四路范围（东晓路/广州大道/金纺路/珠江）为中心，
+  // 长宽各放大到 3 倍，方便缩小看周边。地图锁死在这个框内：拖不出去，框外瓦片不加载。
+  // 原始四路范围：s 23.0911  w 113.2796  e 113.3103  n 23.1069（约 3.1km × 1.8km）
+  var CAMPUS_BOUNDS = { s: 23.0753, w: 113.2489, e: 113.3410, n: 23.1227 };  // 约 9.4km × 5.3km
+  var LS_VIEW = 'ct_view_v2';   // v2 起：永远存 WGS-84，与底图无关，切底图不漂移
+  var LS_NICK = 'ct_nick_v1';
+  var LS_SPLASH = 'ct_splash_v1';
+  var LS_BASE = 'ct_base_v2';        // 'amap' | 'tdt'（v2：默认改为天地图极简底图）
+  var LS_TDTKEY = 'ct_tdt_key_v1';   // 天地图浏览器端 key
+  var LS_TDTSK = 'ct_tdt_sk_v1';     // 安全密钥（可选；启用后每个请求都要带 &sk=）
+  /* 天地图 Key 已内置（用户已在 cloudcenter.tianditu.gov.cn 申请，浏览器端类型）。
+     仍保留设置入口，方便日后换 Key。 */
+  var DEFAULT_TDT_KEY = '7e19446597f2143014e7c35d7efa5f82';
+  var NEAR_WARN = 5;
+
+  var cloud = null;
+  var map = null;
+  var binLayer = null;
+  var draftMarker = null;
+  var accCircle = null;
+  var locWatchId = null;
+  var myMarker = null;
+  var myAccCircle = null;
+  var geoDenied = false;
+  var tileErrors = 0;
+  var saveTimer = null;
+
+  var state = {
+    session: null,
+    bins: [],
+    markers: {},
+    view: null,
+    marking: false,
+    markCentered: false,
+    draft: null,
+    draftPinned: false,
+    detailId: null,
+    editId: null,
+    draftPhoto: null,
+    editPhoto: null,
+    base: 'tdt',       // 底图：'tdt'（天地图极简，无文字/POI/地铁，WGS-84）| 'amap'（高德，GCJ-02）
+    tdtKey: DEFAULT_TDT_KEY,
+    tdtSk: '',         // 天地图安全密钥，空 = 未启用（不影响请求）
+    tileLayer: null,
+    pendingOtp: null
+  };
+
+  // 默认天地图极简底图；用户手动切回高德后记住其选择
+  try {
+    var savedBase = localStorage.getItem(LS_BASE);
+    state.base = (savedBase === 'amap' || savedBase === 'tdt') ? savedBase : 'tdt';
+  } catch (e) {}
+  try { state.tdtKey = localStorage.getItem(LS_TDTKEY) || DEFAULT_TDT_KEY; } catch (e) {}
+  try { state.tdtSk = localStorage.getItem(LS_TDTSK) || ''; } catch (e) {}
+
+  /* ---------------- 小工具 ---------------- */
+  function $(s) { return document.querySelector(s); }
+
+  // 微信内置浏览器：屏蔽了网页定位，调相机也常被限制，需要提前给出替代路径
+  var IS_WX = /MicroMessenger/i.test(navigator.userAgent || '');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function toast(msg) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { t.classList.remove('show'); }, 2000);
+  }
+
+  /* 高德/腾讯底图使用 GCJ-02「火星坐标」，而手机 GPS 给的是 WGS-84，
+     直接叠加会整体偏移数百米。所以：存储一律用 WGS-84 原始值，
+     只在往地图上画的那一刻转成 GCJ-02。 */
+  var GCJ = (function () {
+    var PI = 3.14159265358979324, A = 6378245.0, EE = 0.00669342162296594323;
+    function outOfChina(lat, lng) {
+      return !(lng > 73.66 && lng < 135.05 && lat > 3.86 && lat < 53.55);
+    }
+    function tLat(x, y) {
+      var r = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+      r += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
+      r += (20 * Math.sin(y * PI) + 40 * Math.sin(y / 3 * PI)) * 2 / 3;
+      r += (160 * Math.sin(y / 12 * PI) + 320 * Math.sin(y * PI / 30)) * 2 / 3;
+      return r;
+    }
+    function tLng(x, y) {
+      var r = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+      r += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
+      r += (20 * Math.sin(x * PI) + 40 * Math.sin(x / 3 * PI)) * 2 / 3;
+      r += (150 * Math.sin(x / 12 * PI) + 300 * Math.sin(x / 30 * PI)) * 2 / 3;
+      return r;
+    }
+    function wgs2gcj(lat, lng) {
+      if (outOfChina(lat, lng)) return [lat, lng];
+      var dLat = tLat(lng - 105, lat - 35), dLng = tLng(lng - 105, lat - 35);
+      var rad = lat / 180 * PI, m = Math.sin(rad);
+      m = 1 - EE * m * m;
+      var s = Math.sqrt(m);
+      dLat = (dLat * 180) / ((A * (1 - EE)) / (m * s) * PI);
+      dLng = (dLng * 180) / (A / s * Math.cos(rad) * PI);
+      return [lat + dLat, lng + dLng];
+    }
+    function gcj2wgs(lat, lng) {
+      if (outOfChina(lat, lng)) return [lat, lng];
+      var wLat = lat, wLng = lng;
+      for (var i = 0; i < 6; i++) {
+        var g = wgs2gcj(wLat, wLng);
+        wLat += lat - g[0];
+        wLng += lng - g[1];
+      }
+      return [wLat, wLng];
+    }
+    return { wgs2gcj: wgs2gcj, gcj2wgs: gcj2wgs };
+  })();
+
+  /* 底图坐标层：数据库里永远是 GPS 原始坐标（WGS-84），只在"画到地图上"的那一刻
+     转成当前底图需要的坐标系。
+       高德   = GCJ-02（火星坐标，需要偏移转换）
+       天地图 = CGCS2000，与 WGS-84 差异厘米级 → 恒等
+       自绘   = OSM 数据本身就是 WGS-84 → 恒等 */
+  function wgs2base(lat, lng) {
+    return state.base === 'amap' ? GCJ.wgs2gcj(lat, lng) : [lat, lng];
+  }
+  function base2wgs(lat, lng) {
+    return state.base === 'amap' ? GCJ.gcj2wgs(lat, lng) : [lat, lng];
+  }
+  function xy(lat, lng) { return wgs2base(lat, lng); }
+
+  // 校园范围转成当前底图坐标（高德=GCJ-02 / 天地图=WGS-84），供地图围栏使用
+  function campusRect() {
+    var b = CAMPUS_BOUNDS, sw = xy(b.s, b.w), ne = xy(b.n, b.e);
+    return L.latLngBounds([sw[0], sw[1]], [ne[0], ne[1]]);
+  }
+
+  function inCampus(p) {
+    var b = CAMPUS_BOUNDS;
+    return p.lat >= b.s && p.lat <= b.n && p.lng >= b.w && p.lng <= b.e;
+  }
+
+  function haversine(a, b) {
+    var R = 6371000, rad = Math.PI / 180;
+    var dLat = (b.lat - a.lat) * rad, dLng = (b.lng - a.lng) * rad;
+    var la1 = a.lat * rad, la2 = b.lat * rad;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function fmtDist(m) {
+    if (m == null) return '';
+    return m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(2) + ' km';
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    var d = new Date(iso), diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+    if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+    if (diff < 86400 * 7) return Math.floor(diff / 86400) + ' 天前';
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+           String(d.getDate()).padStart(2, '0');
+  }
+
+  function openSheet(id) { $('#' + id).classList.add('open'); }
+  function closeSheet(id) { $('#' + id).classList.remove('open'); }
+
+  /* ---------------- 地图 ---------------- */
+  /* 底图切换：移除旧瓦片层，按当前设置重建。
+     天地图 vec 底图层不含任何文字/POI/地铁站点（注记是独立图层，这里刻意不叠加）；
+     其原生最高 18 级，超过后用 maxNativeZoom 放大像素。 */
+  function applyBase() {
+    if (!map) return;
+    if (state.tileLayer) { map.removeLayer(state.tileLayer); state.tileLayer = null; }
+
+    if (state.base === 'tdt' && state.tdtKey) {
+      // 安全密钥（sk）不是必填：留空时请求里就不带这个参数。
+      // 只有在云中心开启了「安全密钥」开关后，才必须带上，否则天地图会拒绝请求。
+      var skParam = state.tdtSk ? '&sk=' + encodeURIComponent(state.tdtSk) : '';
+      state.tileLayer = L.tileLayer(
+        'https://t{s}.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk=' + encodeURIComponent(state.tdtKey) + skParam,
+        {
+          subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
+          minZoom: 14,
+          maxZoom: 19,
+          maxNativeZoom: 18,
+          attribution: '&copy; 天地图'
+        }).addTo(map);
+    } else {
+      state.tileLayer = L.tileLayer('https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=7&x={x}&y={y}&z={z}', {
+        subdomains: ['1', '2', '3', '4'],
+        minZoom: 14,
+        maxZoom: 19,
+        attribution: '&copy; 高德地图'
+      }).addTo(map);
+    }
+
+    state.tileLayer.on('tileerror', function () {
+      tileErrors++;
+      if (tileErrors === 4) {
+        toast(state.base === 'tdt'
+          ? (state.tdtSk
+            ? '天地图加载失败——检查安全密钥(sk)是否填对，或先用「移除 sk」再试'
+            : '天地图加载失败——Key 可能失效；若你在云中心开了「安全密钥」，需要把 sk 填到设置里')
+          : '底图加载不畅，但标记功能照常可用');
+      }
+    });
+
+    // 围栏也要跟着底图坐标系走：高德是 GCJ、天地图是 WGS，直接复用旧围栏会错位约 400 米
+    map.options.maxBounds = campusRect();
+    map.setMaxBounds(campusRect());
+  }
+
+  function initMap() {
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(LS_VIEW) || 'null'); } catch (e) {}
+
+    // saved 里存的是底图坐标（GCJ-02）。旧版本可能存过校园外的位置，先夹回校园内。
+    var rect = campusRect();
+    if (saved) {
+      saved.lat = Math.min(rect.getNorth(), Math.max(rect.getSouth(), saved.lat));
+      saved.lng = Math.min(rect.getEast(), Math.max(rect.getWest(), saved.lng));
+      saved.z = Math.min(19, Math.max(14, saved.z || 17));
+    }
+
+    // saved 存的是 WGS-84（ct_view_v2 起），画到底图前按当前底图转换
+    var start = saved ? wgs2base(saved.lat, saved.lng) : wgs2base(CAMPUS.lat, CAMPUS.lng);
+    map = L.map('map', {
+      zoomControl: false,
+      attributionControl: true,
+      // 淡入与标记缩放动画在微信/安卓内置内核上是主要掉帧来源，关掉
+      fadeAnimation: false,
+      markerZoomAnimation: false,
+      minZoom: 14,   // 14 级时手机屏刚好能装下整个 3×3 范围（含周边），便于缩小看全局
+      maxZoom: 19,
+      maxBounds: rect,
+      maxBoundsViscosity: 1.0
+    }).setView(start, saved ? saved.z : 17);
+
+    applyBase();
+
+    L.control.zoom({ position: 'bottomleft' }).addTo(map);
+    binLayer = L.layerGroup().addTo(map);
+
+    // 有上次浏览记录时，不自动跳到当前位置（保留用户上次看的地方）
+    if (saved) state.view = 1;
+
+    map.on('moveend', saveView);
+    map.on('dragstart', function () { state.draftPinned = true; });
+  }
+
+  function saveView() {
+    if (!map) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      var c = map.getCenter();
+      var w = base2wgs(c.lat, c.lng);   // 视图永远以 WGS-84 存储，与底图无关
+      try {
+        localStorage.setItem(LS_VIEW, JSON.stringify({ lat: w[0], lng: w[1], z: map.getZoom() }));
+      } catch (e) {}
+    }, 400);
+  }
+
+  var TRASH_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">' +
+    '<path d="M5 7h14M9 7V5.2c0-.7.5-1.2 1.2-1.2h3.6c.7 0 1.2.5 1.2 1.2V7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>' +
+    '<path d="M6.5 7l.8 11.2c.1.9.8 1.6 1.7 1.6h6c.9 0 1.6-.7 1.7-1.6L17.5 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>' +
+    '<path d="M10.2 10.5v6M13.8 10.5v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+  /* 照片统一压成 200×200 的正方形 JPEG（居中裁剪），存成 dataURL 直接进数据库。
+     单张约 8~12KB；等点数上到几百个再改成按需加载/独立存储，现在先求简单。 */
+  var PHOTO_SIZE = 200, PHOTO_Q = 0.7;
+
+  function compressPhoto(file, cb) {
+    if (!file) { cb(null); return; }
+    // 部分安卓机相机返回空 MIME（file.type === ''），这类也要尝试解码，否则照片会被误判为"读不出来"
+    if (file.type && !/^image\//.test(file.type)) { cb(null); return; }
+    if (file.size && file.size > 25 * 1024 * 1024) { cb(null); return; }   // 超过 25MB 直接放弃，避免手机内存爆掉
+    var img = new Image();
+    var url = URL.createObjectURL(file);
+    img.onload = function () {
+      try {
+        var s = Math.min(img.naturalWidth, img.naturalHeight);
+        var c = document.createElement('canvas');
+        c.width = c.height = PHOTO_SIZE;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, PHOTO_SIZE, PHOTO_SIZE);
+        ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s,
+          0, 0, PHOTO_SIZE, PHOTO_SIZE);
+        cb(c.toDataURL('image/jpeg', PHOTO_Q));
+      } catch (e) { cb(null); }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); cb(null); };
+    img.src = url;
+  }
+
+  function setPhotoPreview(el, dataUrl) {
+    if (dataUrl) el.innerHTML = '<img src="' + dataUrl + '" alt="">';
+    else el.textContent = '\u{1F4F7}';
+  }
+
+  /* 一组照片选择器：拍照（capture）/ 相册 两个入口 + 预览 + 移除。
+     两个入口共用同一套压缩与状态写入逻辑，避免重复代码。 */
+  function bindOnePhotoPicker(camBtn, libBtn, camInput, libInput, prevEl, clearBtn, stateKey) {
+    function open(el) {
+      if (!el) { toast('照片选择组件没有加载出来，请下拉刷新页面'); return; }
+      try { el.click(); }
+      catch (e) { toast('打不开相机/相册，请检查浏览器的相机与照片权限'); }
+    }
+    $(camBtn).addEventListener('click', function () { open($(camInput)); });
+    $(libBtn).addEventListener('click', function () { open($(libInput)); });
+
+    [camInput, libInput].forEach(function (sel) {
+      $(sel).addEventListener('change', function () {
+        var f = this.files && this.files[0];
+        this.value = '';                     // 先清空，保证同一张照片能重复选
+        if (!f) return;
+        compressPhoto(f, function (d) {
+          if (!d) { toast('这张图读不出来，换一张试试'); return; }
+          state[stateKey] = d;
+          setPhotoPreview($(prevEl), d);
+          $(clearBtn).hidden = false;
+          toast('照片已就绪');
+        });
+      });
+    });
+
+    $(clearBtn).addEventListener('click', function () {
+      state[stateKey] = null;
+      setPhotoPreview($(prevEl), null);
+      $(clearBtn).hidden = true;
+    });
+  }
+
+  /* ---------------- 开发者模式 ----------------
+     Key 与安全密钥只在这个模式下能改，免得同学手滑改坏底图。
+     说明：这只是「防误改」的门，前端口令拦不住真正去翻源码的人，别当安全机制用。 */
+  var LS_DEV = 'ct_dev_ok_v1';    // 只在本次浏览器会话内有效
+  var DEV_DIGEST = 2088290732;    // 口令摘要（djb2），源码里不出现明文
+  var devUnlocked = false;
+
+  function devDigest(s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+    return h;
+  }
+
+  function setDevMode(on) {
+    devUnlocked = !!on;
+    $('#devGate').hidden = devUnlocked;
+    if (!devUnlocked) {
+      $('#devPwdRow').hidden = true;
+      $('#devPwd').value = '';
+      $('#devErr').textContent = '';
+    }
+    renderBaseUI();
+  }
+
+  function bindDevMode() {
+    try { devUnlocked = sessionStorage.getItem(LS_DEV) === '1'; } catch (e) {}
+    $('#devGate').hidden = devUnlocked;
+
+    $('#btnDevOpen').addEventListener('click', function () {
+      $('#devPwdRow').hidden = false;
+      $('#devErr').textContent = '';
+      $('#devPwd').focus();
+    });
+
+    function unlock() {
+      var v = ($('#devPwd').value || '').trim();
+      if (!v) { $('#devErr').textContent = '请输入开发者口令'; return; }
+      if (devDigest(v) !== DEV_DIGEST) {
+        $('#devErr').textContent = '口令不对';
+        $('#devPwd').value = '';
+        return;
+      }
+      try { sessionStorage.setItem(LS_DEV, '1'); } catch (e) {}
+      setDevMode(true);
+      toast(state.base === 'tdt' ? '已进入开发者模式' : '已进入开发者模式；切到「极简 · 无文字」可见 Key 设置');
+    }
+    $('#btnDevUnlock').addEventListener('click', unlock);
+    $('#devPwd').addEventListener('keydown', function (e) { if (e.key === 'Enter') unlock(); });
+    $('#btnDevLock').addEventListener('click', function () {
+      try { sessionStorage.removeItem(LS_DEV); } catch (e) {}
+      setDevMode(false);
+      toast('已退出开发者模式');
+    });
+  }
+
+  /* ---------------- 底图设置（我的面板） ---------------- */
+  function renderBaseUI() {
+    $('#segBase').querySelectorAll('button').forEach(function (b) {
+      b.classList.toggle('on', b.getAttribute('data-v') === state.base);
+    });
+    // Key 与安全密钥只对开发者开放
+    $('#tdtBox').hidden = !(devUnlocked && state.base === 'tdt');
+    var ki = $('#tdtKey');
+    if (ki && !ki.value) ki.value = state.tdtKey;
+    var si = $('#tdtSk');
+    if (si && !si.value) si.value = state.tdtSk;
+    var h = $('#baseHint');
+    var dh = $('#devHint');
+    if (state.base === 'tdt') {
+      h.innerHTML = '极简底图使用<b>天地图</b>（国家官方底图），Key 已内置、开箱即用。' +
+        '底图层只有道路、绿地、水系——<b>没有任何文字、POI 图标、地铁线路</b>' +
+        '（文字和图标在注记层，本应用刻意不加载）。坐标系为 CGCS2000，与 GPS 一致，标记零偏移。';
+      if (dh) {
+        dh.innerHTML = '<b>防盗用建议</b>：真正有效的是去' +
+          '<a href="https://cloudcenter.tianditu.gov.cn/center/development/myApp" target="_blank" rel="noopener">云中心</a>' +
+          '给这个 Key 配「域名白名单」，填本站域名即可，零风险。' +
+          '<b>安全密钥 sk</b> 打开后会要求每个请求都带 sk（填在上面），单页静态站收益有限，建议先只配白名单。' +
+          (state.tdtSk ? '<br><span style="color:#b45309">当前已启用 sk。</span>' : '');
+      }
+    } else {
+      h.textContent = '高德底图带路名和地标，找楼更方便，但无法去掉文字与地铁图标；追求简洁就用「极简 · 无文字」。';
+      if (dh) dh.textContent = '';
+    }
+  }
+
+  function bindBaseSettings() {
+    $('#segBase').querySelectorAll('button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var v = b.getAttribute('data-v');
+        if (v === state.base) return;
+        state.base = v;
+        try { localStorage.setItem(LS_BASE, v); } catch (e) {}
+        tileErrors = 0;
+        applyBase();
+        renderBaseUI();
+        if (v === 'tdt' && !state.tdtKey) toast('请先填入天地图 Key，填好前仍显示高德底图');
+        else toast(v === 'tdt' ? '已切换到极简底图' : '已切换到高德底图');
+      });
+    });
+    $('#btnTdtSave').addEventListener('click', function () {
+      var k = $('#tdtKey').value.trim();
+      if (!k) { toast('请先粘贴天地图 Key'); return; }
+      var sk = ($('#tdtSk').value || '').trim();
+      state.tdtKey = k;
+      state.tdtSk = sk;
+      try { localStorage.setItem(LS_TDTKEY, k); } catch (e) {}
+      try { localStorage.setItem(LS_TDTSK, sk); } catch (e) {}
+      tileErrors = 0;
+      applyBase();
+      renderBaseUI();
+      toast(sk ? '已保存（含安全密钥）。若地图空白，检查 sk 是否正确' : '已保存，底图已切换');
+    });
+    renderBaseUI();
+  }
+
+  function bindPhotoPickers() {
+    bindOnePhotoPicker('#btnMCam', '#btnMPick', '#mPhotoCam', '#mPhotoLib', '#mPhotoPrev', '#btnMClear', 'draftPhoto');
+    bindOnePhotoPicker('#btnECam', '#btnEPick', '#ePhotoCam', '#ePhotoLib', '#ePhotoPrev', '#btnEClear', 'editPhoto');
+    // 微信内置浏览器对网页调相机限制较多，提前把替代方案写在面板里，不让用户白点
+    if (IS_WX) {
+      ['#mPhotoWx', '#ePhotoWx'].forEach(function (s) {
+        var el = $(s);
+        if (el) el.hidden = false;
+      });
+    }
+  }
+
+  function pinHtml(code) {
+    return '<div class="ph"></div><div class="code">' + esc(code || '?') + '</div>';
+  }
+
+  function fillMarkerPhoto(marker, b) {
+    var el = marker.getElement();
+    if (!el) return;
+    var ph = el.querySelector('.ph');
+    if (!ph) return;
+    if (b.photo) {
+      var im = new Image();
+      im.alt = '';
+      im.src = b.photo;
+      ph.appendChild(im);
+    } else {
+      ph.innerHTML = '<div class="nopic">' + TRASH_SVG + '</div>';
+    }
+  }
+
+  function renderBins() {
+    binLayer.clearLayers();
+    state.markers = {};
+    state.bins.forEach(function (b) {
+      var icon = L.divIcon({
+        className: 'bin-marker',
+        html: pinHtml(b.code),
+        iconSize: [0, 0],
+        iconAnchor: [0, 0]
+      });
+      var m = L.marker(xy(b.lat, b.lng), { icon: icon }).addTo(binLayer);
+      fillMarkerPhoto(m, b);
+      m.on('click', function () { showDetail(b.id); });
+      state.markers[b.id] = m;
+    });
+    $('#chipCount').innerHTML = '已标记 <b>' + state.bins.length + '</b> 个';
+    $('#meTotal').textContent = state.bins.length;
+    if (state.session) {
+      $('#meMine').textContent = state.bins.filter(function (b) {
+        return b.owner_id === state.session.user.id;
+      }).length;
+    }
+    renderList();
+  }
+
+  function renderList() {
+    var body = $('#listBody');
+    $('#listCount').textContent = state.bins.length ? '(' + state.bins.length + ')' : '';
+    if (!state.bins.length) {
+      body.innerHTML = '<div class="empty">还没有任何标记。<br>点右下角的 ＋ 开始标记。</div>';
+      return;
+    }
+    var me = state.session ? state.session.user.id : null;
+    var here = state.draft || lastKnownPos;
+    var rows = state.bins.slice().sort(function (a, b) {
+      if (here) return haversine(here, a) - haversine(here, b);
+      return (b.code || '').localeCompare(a.code || '');
+    });
+    body.innerHTML = rows.map(function (b) {
+      var d = here ? fmtDist(haversine(here, b)) : '';
+      return '<div class="item" data-id="' + b.id + '">' +
+        (b.photo
+          ? '<div class="dot photo" style="background-image:url(' + b.photo + ')"></div>'
+          : '<div class="dot">' + esc(b.code || '?') + '</div>') +
+        '<div class="body">' +
+          '<div class="t1">' + esc(b.code || '未命名') +
+            (b.owner_id === me ? ' <span style="color:#1f8a5f;font-size:11px">· 我标的</span>' : '') +
+          '</div>' +
+          (b.note ? '<div class="t2">' + esc(b.note) + '</div>' : '<div class="t2" style="color:#b9c4bf">（没写备注）</div>') +
+          '<div class="t3">' + (d ? d + ' · ' : '') + b.lat.toFixed(5) + ', ' + b.lng.toFixed(5) + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+    Array.prototype.forEach.call(body.querySelectorAll('.item'), function (el) {
+      el.addEventListener('click', function () {
+        closeSheet('sheetList');
+        showDetail(parseInt(el.dataset.id, 10));
+      });
+    });
+  }
+
+  /* ---------------- 定位 ---------------- */
+  var lastKnownPos = null;
+
+  function geoErrText(err) {
+    if (!err) return '定位失败';
+    if (err.code === 1) return '定位权限被拒绝：请在浏览器里允许本站获取位置，然后点右下角准星重试。';
+    if (err.code === 2) return '暂时无法获取位置，请到开阔处再试。';
+    if (err.code === 3) return '定位超时，请重试。';
+    return err.message || '定位失败';
+  }
+
+  // 顶部小标签用的短文案
+  function gpsShort(err) {
+    var c = err && err.code;
+    if (c === 1) return '定位权限被拒绝';
+    if (c === 2) return '无法定位';
+    if (c === 3) return '定位超时';
+    if (err && /不支持/.test(err.message || '')) return '不支持定位';
+    return '无法定位';
+  }
+
+  function once(opts) {
+    return new Promise(function (resolve, reject) {
+      if (!navigator.geolocation) return reject(new Error('这台设备不支持网页定位'));
+      navigator.geolocation.getCurrentPosition(resolve, reject, opts);
+    });
+  }
+
+  function geoError(e) {
+    var err = new Error(geoErrText(e));
+    err.code = e && e.code;
+    return err;
+  }
+
+  /* 两段式定位：先要高精度（GPS 卫星），超时或失败再退回低精度（基站 / WiFi）。
+     原因：室内首次拿 GPS 定位经常十几秒都定不下来，只试一次就会“什么都没发生”。
+     低精度虽然只有几百米，但能立刻给出结果，至少让界面有反应。
+     权限被拒（code 1）时直接放弃，退回低精度也一样会被拒。 */
+  function getPos(timeout) {
+    var hi = Math.max(6000, timeout || 12000);
+    return once({ enableHighAccuracy: true, timeout: hi, maximumAge: 10000 })
+      .catch(function (e) {
+        if (e && e.code === 1) throw e;
+        return once({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
+      })
+      .catch(function (e) { throw geoError(e); });
+  }
+
+  function setGpsChip(html, warn) {
+    var chip = $('#chipGps');
+    chip.style.display = '';
+    chip.className = 'chip' + (warn ? ' warn' : '');
+    chip.innerHTML = html;
+  }
+
+  /* 定位监听策略：只在「地图页 + 页面在前台」时保持 watchPosition。
+     这样地图上能持续看到自己的位置，又不会在切到清单/切到后台时
+     白白唤醒 GPS（手机发热、掉帧的主要来源）。
+     权限被拒（geoDenied）后不再反复重试，避免无谓的失败回调。 */
+
+  function syncWatch() {
+    var want = !geoDenied && !document.hidden && curTab === 'tabMap' && !!navigator.geolocation;
+    if (!want) {
+      if (locWatchId != null) { navigator.geolocation.clearWatch(locWatchId); locWatchId = null; }
+      return;
+    }
+    if (locWatchId == null) {
+      locWatchId = navigator.geolocation.watchPosition(onGeoOk, onGeoErr, {
+        enableHighAccuracy: true, timeout: 25000, maximumAge: 6000
+      });
+    }
+  }
+
+  function onGeoOk(p) {
+    geoDenied = false;
+    var pos = { lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy };
+    lastKnownPos = { lat: pos.lat, lng: pos.lng };
+    var acc = Math.round(pos.accuracy || 0);
+    var outside = !inCampus(pos);
+    setGpsChip('<b>±' + acc + ' m</b>' +
+      (outside ? '<br><span class="sub">不在校园内</span>' : ''), acc > 40 || outside);
+    var lb = $('#btnLocate');
+    if (lb) lb.classList.toggle('out', outside);
+    renderMe(pos);
+    if (state.marking && !state.draftPinned) setDraft(pos, false);
+  }
+
+  function onGeoErr(e) {
+    setGpsChip('<b>' + gpsShort(e) + '</b>', true);
+    if (e && e.code === 1) { geoDenied = true; syncWatch(); }   // 权限被拒就别反复重试
+    if (state.marking && !state.draft) {
+      $('#markCoord').textContent = '还没拿到定位';
+      $('#markErr').textContent = geoErrText(e);
+    }
+  }
+
+  /* 我的位置：蓝点 + 淡蓝精度圈，由 watchPosition 持续刷新 */
+  function renderMe(pos) {
+    if (!map) return;
+    var target = xy(pos.lat, pos.lng);
+    if (!myMarker) {
+      myMarker = L.marker(target, {
+        interactive: false, keyboard: false, zIndexOffset: 900,
+        icon: L.divIcon({
+          className: 'me-marker',
+          html: '<span class="pulse"></span><span class="dot"></span>',
+          iconSize: [0, 0], iconAnchor: [0, 0]
+        })
+      }).addTo(map);
+    } else {
+      myMarker.setLatLng(target);
+    }
+    // 精度圈只在合理范围内画，否则一个几公里的圈会糊满屏幕
+    var acc = Math.round(pos.accuracy || 0);
+    if (acc > 0 && acc <= 300) {
+      if (!myAccCircle) {
+        myAccCircle = L.circle(target, {
+          radius: acc, color: '#1a73e8', weight: 1, opacity: .45,
+          fillColor: '#1a73e8', fillOpacity: .10, interactive: false
+        }).addTo(map);
+      } else {
+        myAccCircle.setLatLng(target);
+        myAccCircle.setRadius(acc);
+      }
+    } else if (myAccCircle) {
+      map.removeLayer(myAccCircle);
+      myAccCircle = null;
+    }
+  }
+
+  /* 归位到自己的位置。地图被锁在框内，人在框外就没法归位。 */
+  function centerOnMe(pos, quiet) {
+    if (!pos) return false;
+    if (!inCampus(pos)) {
+      if (!quiet) toast('你当前的位置在地图范围之外，没法归位。地图覆盖中大南校园及周边一带。');
+      return false;
+    }
+    map.setView(xy(pos.lat, pos.lng), Math.max(map.getZoom(), 18), { animate: false });
+    return true;
+  }
+
+  /* 定位按钮：先用已有坐标立刻归位，再补一次高精度定位 */
+  function locateMe() {
+    var btn = $('#btnLocate');
+    geoDenied = false;                       // 用户手动触发，允许重试一次
+    if (!lastKnownPos) setGpsChip('<b>定位中…</b>');
+    if (lastKnownPos) centerOnMe(lastKnownPos, false);
+    btn.classList.add('busy');
+    getPos(12000).then(function (p) {
+      btn.classList.remove('busy');
+      onGeoOk(p);
+      centerOnMe(lastKnownPos, false);
+      syncWatch();
+    }).catch(function (e) {
+      btn.classList.remove('busy');
+      setGpsChip('<b>' + gpsShort(e) + '</b>', true);
+      toast((e && e.message) || '定位失败');
+    });
+  }
+
+  function autoLocate() {
+    setGpsChip('<b>定位中…</b>');
+    getPos(12000).then(function (p) {
+      onGeoOk(p);
+      // 人不在校园里（比如在宿舍测试）就不跳，停在校园全景
+      if (!state.view && inCampus(lastKnownPos)) map.setView(xy(lastKnownPos.lat, lastKnownPos.lng), 17);
+    }).catch(function (e) {
+      // 不静默：把失败原因直接写在顶部标签上，方便判断是没权限还是没信号
+      setGpsChip('<b>' + gpsShort(e) + '</b><br><span class="sub">点右下角准星重试</span>', true);
+    }).then(function () { syncWatch(); });
+  }
+
+  /* ---------------- 标记流程 ---------------- */
+  function startMark() {
+    if (!state.session) { openLogin(); return; }
+    state.marking = true;
+    state.markCentered = false;
+    state.draftPinned = false;
+    state.draft = null;
+    $('#mCode').value = suggestCode();
+    $('#mNote').value = '';
+    state.draftPhoto = null;
+    setPhotoPreview($('#mPhotoPrev'), null);
+    $('#btnMClear').hidden = true;
+    $('#markErr').textContent = '';
+    $('#markCoord').textContent = '正在定位…（站到垃圾桶旁边）';
+    openSheet('sheetMark');
+    syncWatch();
+
+    getPos(15000).then(function (p) {
+      onGeoOk(p);
+    }).catch(function (e) {
+      $('#markCoord').textContent = '定位失败';
+      $('#markErr').textContent = geoErrText(e);
+    });
+  }
+
+  function setDraft(pos, center) {
+    state.draft = pos;
+
+    if (!draftMarker) {
+      draftMarker = L.marker(xy(pos.lat, pos.lng), {
+        draggable: true, zIndexOffset: 1200,
+        icon: L.divIcon({ className: 'draft-marker', html: '<div class="pin">新标记 ✥</div>', iconSize: [0, 0], iconAnchor: [0, 0] })
+      }).addTo(map);
+      draftMarker.on('dragstart', function () { state.draftPinned = true; });
+      draftMarker.on('dragend', function () {
+        var ll = draftMarker.getLatLng();
+        var w = base2wgs(ll.lat, ll.lng);
+        state.draft = { lat: w[0], lng: w[1], accuracy: state.draft ? state.draft.accuracy : null };
+        updateMarkCoord();
+      });
+    } else {
+      draftMarker.setLatLng(xy(pos.lat, pos.lng));
+    }
+
+    var target = xy(pos.lat, pos.lng);
+    // 只在进入标记时居中一次；之后 GPS 刷新不再自动带动地图，
+    // 避免每来一次定位就播一段平移动画（这是拖图/缩放卡顿的主因）。
+    if (!state.markCentered) { map.setView(target, 18); state.markCentered = true; }
+    else if (center) map.panTo(target, { animate: false });
+
+    var acc = Math.round(pos.accuracy || 0);
+    if (!accCircle) {
+      accCircle = L.circle(target, { radius: acc, color: '#ea580c', weight: 1, fillColor: '#ea580c', fillOpacity: 0.12 }).addTo(map);
+    } else {
+      accCircle.setLatLng(target);
+      accCircle.setRadius(acc);
+    }
+    updateMarkCoord();
+  }
+
+  function updateMarkCoord() {
+    var d = state.draft;
+    if (!d) return;
+    var acc = Math.round(d.accuracy || 0);
+    var bad = acc > 40;
+    var txt = d.lat.toFixed(6) + ', ' + d.lng.toFixed(6);
+    $('#markCoord').innerHTML = '<span style="font-weight:600">' + txt + '</span><br>' +
+      '精度 <span class="acc' + (bad ? ' bad' : '') + '">±' + acc + ' m</span>' +
+      (state.draftPinned ? ' · 已手动微调' : '');
+    var near = nearestBin(d);
+    if (near && near.dist < NEAR_WARN) {
+      $('#markErr').style.color = '#c2410c';
+      $('#markErr').textContent = '注意：' + Math.round(near.dist) + ' 米内已经有「' + (near.bin.code || '未命名') + '」，确认不是重复标记吗？';
+    } else {
+      $('#markErr').style.color = '';
+      $('#markErr').textContent = '';
+    }
+  }
+
+  function nearestBin(pos) {
+    var best = null;
+    state.bins.forEach(function (b) {
+      var d = haversine(pos, b);
+      if (!best || d < best.dist) best = { bin: b, dist: d };
+    });
+    return best;
+  }
+
+  function suggestCode() {
+    var nums = [];
+    state.bins.forEach(function (b) {
+      var m = /^(\d{1,4})$/.exec(String(b.code || '').trim());
+      if (m) nums.push(parseInt(m[1], 10));
+    });
+    var next = nums.length ? Math.max.apply(null, nums) + 1 : 101;
+    return String(next).padStart(3, '0');
+  }
+
+  function cancelMark() {
+    state.marking = false;
+    state.markCentered = false;
+    state.draft = null;
+    state.draftPinned = false;
+    // 不关定位：地图页本来就要一直显示自己的位置，由 syncWatch 按标签页/前台状态控制
+    if (draftMarker) { map.removeLayer(draftMarker); draftMarker = null; }
+    if (accCircle) { map.removeLayer(accCircle); accCircle = null; }
+    closeSheet('sheetMark');
+  }
+
+  function saveBin() {
+    if (!state.draft) { toast('还没拿到定位，稍等一下'); return; }
+    var code = $('#mCode').value.trim();
+    var note = $('#mNote').value.trim();
+    if (!code) { code = suggestCode(); $('#mCode').value = code; }
+
+    var btn = $('#btnSave');
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    $('#markErr').textContent = '';
+
+    cloud.database.from('bins').insert({
+      code: code,
+      note: note || null,
+      photo: state.draftPhoto || null,
+      lat: state.draft.lat,
+      lng: state.draft.lng,
+      owner_name: nick()
+    }).select().then(function (res) {
+      btn.disabled = false;
+      btn.textContent = '保存标记';
+      if (res.error) {
+        if (res.error.code === '23505') { $('#markErr').textContent = '编号「' + code + '」已经用过了，换一个。'; }
+        else if (res.error.code === '42501') { $('#markErr').textContent = '登录状态失效了，请重新登录后再保存。'; }
+        else { $('#markErr').textContent = res.error.message || '保存失败，请重试。'; }
+        return;
+      }
+      state.bins.push(res.data[0]);
+      cancelMark();
+      renderBins();
+      toast('已标记 ' + code);
+    }).catch(function (e) {
+      btn.disabled = false;
+      btn.textContent = '保存标记';
+      $('#markErr').textContent = (e && e.message) || '保存失败，请检查网络。';
+    });
+  }
+
+  /* ---------------- 详情 / 编辑 / 删除 ---------------- */
+  function showDetail(id) {
+    var b = state.bins.filter(function (x) { return x.id === id; })[0];
+    if (!b) return;
+    state.detailId = id;
+    var dp = $('#dPhoto');
+    if (b.photo) { dp.src = b.photo; dp.hidden = false; }
+    else { dp.hidden = true; dp.removeAttribute('src'); }
+    $('#dCode').textContent = b.code || '未命名';
+    $('#dNote').innerHTML = b.note ? esc(b.note) : '<span style="color:#b9c4bf">（没写备注）</span>';
+    $('#dCoord').textContent = b.lat.toFixed(6) + ', ' + b.lng.toFixed(6);
+    $('#dTime').textContent = fmtTime(b.created_at);
+    var mine = state.session && b.owner_id === state.session.user.id;
+    $('#btnEdit').style.display = mine ? '' : 'none';
+    $('#btnDelete').style.display = mine ? '' : 'none';
+    openSheet('sheetDetail');
+  }
+
+  function openEdit() {
+    var b = state.bins.filter(function (x) { return x.id === state.detailId; })[0];
+    if (!b) return;
+    state.editId = b.id;
+    $('#eCode').value = b.code || '';
+    $('#eNote').value = b.note || '';
+    state.editPhoto = b.photo || null;
+    setPhotoPreview($('#ePhotoPrev'), b.photo || null);
+    $('#btnEClear').hidden = !b.photo;
+    $('#editErr').textContent = '';
+    closeSheet('sheetDetail');
+    openSheet('sheetEdit');
+  }
+
+  function saveEdit() {
+    var id = state.editId;
+    var code = $('#eCode').value.trim();
+    var note = $('#eNote').value.trim();
+    if (!code) { $('#editErr').textContent = '编号不能为空。'; return; }
+    $('#btnEditSave').disabled = true;
+    cloud.database.from('bins').update({ code: code, note: note || null, photo: state.editPhoto || null })
+      .eq('id', id).select().then(function (res) {
+        $('#btnEditSave').disabled = false;
+        if (res.error) {
+          $('#editErr').textContent = res.error.code === '23505' ? '这个编号已经被占用了。' : (res.error.message || '修改失败。');
+          return;
+        }
+        if (!res.data || !res.data.length) { $('#editErr').textContent = '没有改到任何记录（可能不是你的标记）。'; return; }
+        var i = state.bins.findIndex(function (x) { return x.id === id; });
+        if (i >= 0) state.bins[i] = res.data[0];
+        closeSheet('sheetEdit');
+        renderBins();
+        toast('已保存');
+      }).catch(function (e) {
+        $('#btnEditSave').disabled = false;
+        $('#editErr').textContent = (e && e.message) || '修改失败。';
+      });
+  }
+
+  function removeBin() {
+    var id = state.detailId;
+    var b = state.bins.filter(function (x) { return x.id === id; })[0];
+    if (!b) return;
+    if (!confirm('删除「' + (b.code || '未命名') + '」这个标记？删了就找不回来了。')) return;
+    cloud.database.from('bins').delete().eq('id', id).select().then(function (res) {
+      if (res.error) { toast(res.error.message || '删除失败'); return; }
+      if (!res.data || !res.data.length) { toast('没有删除任何记录'); return; }
+      state.bins = state.bins.filter(function (x) { return x.id !== id; });
+      closeSheet('sheetDetail');
+      renderBins();
+      toast('已删除');
+    });
+  }
+
+  /* ---------------- 登录 ----------------
+     两处入口共用同一套逻辑：开屏页（splash）与「点标记时」弹出的浮层（maskLogin）。
+     开屏页可以直接登录，也可以游客身份进入——标记时才要求登录。 */
+  var LOGIN_UI = {
+    splash: { phone: '#sPhone', code: '#sCode', err: '#splashErr', send: '#sBtnSend', login: '#sBtnLogin' },
+    mask: { phone: '#lPhone', code: '#lCode', err: '#loginErr', send: '#btnSendCode', login: '#btnPhoneLogin' }
+  };
+
+  function nick() {
+    return localStorage.getItem(LS_NICK) || '匿名同学';
+  }
+
+  // 把一套选择器实例化成可操作的上下文（含独立的倒计时句柄）
+  function uiCtx(sel) {
+    return {
+      phone: $(sel.phone), code: $(sel.code), err: $(sel.err),
+      send: $(sel.send), login: $(sel.login), timer: null
+    };
+  }
+
+  function openLogin() {
+    $('#loginErr').textContent = '';
+    $('#maskLogin').classList.add('open');
+  }
+
+  // 登录成功：收起所有登录界面（含开屏页），进入地图
+  function afterLogin() {
+    $('#maskLogin').classList.remove('open');
+    enterApp();
+    toast('登录成功');
+    return refreshSession();
+  }
+
+  function applySession(session) {
+    state.session = session || null;
+    var btnLg = $('#btnLogout');
+    var who = $('#meWho');
+    if (session) {
+      $('#chipUser').style.display = '';
+      $('#userName').textContent = nick();
+      $('#meMine').textContent = state.bins.filter(function (b) {
+        return b.owner_id === session.user.id;
+      }).length;
+      // 已登录：这里始终留一个退出入口
+      if (btnLg) { btnLg.style.display = ''; btnLg.textContent = '退出登录'; btnLg.classList.add('btn-danger'); }
+      if (who) who.innerHTML = '已登录 · <b>' + esc(nick()) + '</b>';
+      enterApp();   // 已登录的人不用在开屏页停留
+    } else {
+      $('#chipUser').style.display = 'none';
+      // 没登录也留一个账号入口，点它就是登录
+      if (btnLg) { btnLg.style.display = ''; btnLg.textContent = '登录 / 注册'; btnLg.classList.remove('btn-danger'); }
+      if (who) who.textContent = '未登录 · 可以随便逛逛，标记时才需要登录';
+    }
+    renderList();
+  }
+
+  function sendCode(ctx) {
+    var phone = ctx.phone.value.trim();
+    if (!/^1\d{10}$/.test(phone)) { ctx.err.textContent = '请输入正确的 11 位手机号'; return; }
+    ctx.err.textContent = '';
+    ctx.send.disabled = true;
+    ctx.send.textContent = '发送中…';
+    cloud.auth.sendOtp({ phone: phone }).then(function (sent) {
+      ctx.send.disabled = false;
+      if (sent.error) {
+        ctx.send.textContent = '获取验证码';
+        ctx.err.textContent = sent.error.message || '发送失败，请稍后再试。';
+        return;
+      }
+      state.pendingOtp = {
+        phone: phone,
+        verificationId: sent.data.verificationId,
+        isExistingUser: sent.data.isExistingUser
+      };
+      var left = 60;
+      ctx.send.textContent = left + 's';
+      clearInterval(ctx.timer);
+      ctx.timer = setInterval(function () {
+        left--;
+        if (left <= 0) {
+          clearInterval(ctx.timer);
+          ctx.send.disabled = false;
+          ctx.send.textContent = '重新获取';
+        } else { ctx.send.textContent = left + 's'; }
+      }, 1000);
+    }).catch(function () {
+      ctx.send.disabled = false;
+      ctx.send.textContent = '获取验证码';
+      ctx.err.textContent = '发送失败，请检查网络。';
+    });
+  }
+
+  function phoneLogin(ctx) {
+    var phone = ctx.phone.value.trim();
+    var token = ctx.code.value.trim();
+    var pending = state.pendingOtp;
+    if (!pending || pending.phone !== phone) { ctx.err.textContent = '请先获取验证码'; return; }
+    if (!token) { ctx.err.textContent = '请输入收到的验证码'; return; }
+    ctx.err.textContent = '';
+    ctx.login.disabled = true;
+    ctx.login.textContent = '登录中…';
+    cloud.auth.verifyOtp({
+      phone: pending.phone,
+      verificationId: pending.verificationId,
+      isExistingUser: pending.isExistingUser,
+      token: token
+    }).then(function (done) {
+      ctx.login.disabled = false;
+      ctx.login.textContent = '登录 / 注册';
+      if (done.error) { ctx.err.textContent = done.error.message || '验证码不正确'; return; }
+      state.pendingOtp = null;
+      return afterLogin();
+    }).catch(function () {
+      ctx.login.disabled = false;
+      ctx.login.textContent = '登录 / 注册';
+      ctx.err.textContent = '登录失败，请重试。';
+    });
+  }
+
+  function wechatLogin(ctx) {
+    ctx.err.textContent = '';
+    cloud.auth.signInWithOAuth({ provider: 'wechat', redirectTo: location.origin }).then(function (r) {
+      if (r.error) {
+        ctx.err.textContent = (r.error.message || '微信登录不可用') + '，请改用手机号登录。';
+        return;
+      }
+      location.assign(r.data.url);
+    }).catch(function () {
+      ctx.err.textContent = '微信登录发起失败，请改用手机号登录。';
+    });
+  }
+
+  function logout() {
+    cloud.auth.signOut().then(function () {
+      applySession(null);
+      closeSheet('sheetMe');
+      toast('已退出登录');
+    });
+  }
+
+  /* ---------------- 导出 ---------------- */
+  function exportCsv() {
+    if (!state.bins.length) { toast('还没有标记可以导出'); return; }
+    var head = '编号,纬度,经度,备注,标记时间\n';
+    var body = state.bins.map(function (b) {
+      var note = '"' + String(b.note || '').replace(/"/g, '""') + '"';
+      return [b.code || '', b.lat, b.lng, note, b.created_at || ''].join(',');
+    }).join('\n');
+    var blob = new Blob(['\ufeff' + head + body], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = '垃圾桶标记.csv';
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
+  }
+
+  /* ---------------- 扫码分享 ---------------- */
+  function siteUrl() {
+    return (location.origin + location.pathname).replace(/index\.html?$/i, '');
+  }
+
+  function copyLink() {
+    var url = siteUrl();
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); toast('链接已复制，发给同学即可'); }
+      catch (e) { toast(url); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () { toast('链接已复制，发给同学即可'); }, fallback);
+    } else { fallback(); }
+  }
+
+  function saveQr() {
+    var a = document.createElement('a');
+    a.href = './vendor/qr-site.png';
+    a.download = '垃圾桶编号地图-二维码.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast('二维码已保存，可发群或打印');
+  }
+
+  /* ---------------- 数据 ---------------- */
+  function loadBins() {
+    return cloud.database.from('bins')
+      .select('id,code,note,photo,lat,lng,owner_id,owner_name,created_at')
+      .order('created_at', { ascending: true })
+      .then(function (res) {
+        if (res.error) {
+          console.error('[bins load]', res.error.code || res.error.message);
+          $('#chipCount').innerHTML = '加载失败';
+          return;
+        }
+        state.bins = res.data || [];
+        renderBins();
+      });
+  }
+
+  function refreshSession() {
+    return cloud.auth.getSession().then(function (res) {
+      applySession(res && res.data ? res.data : null);
+    }).catch(function () { applySession(null); });
+  }
+
+  /* ---------------- 启动 ---------------- */
+  function bindUI() {
+    $('#fabMark').addEventListener('click', startMark);
+    $('#btnSave').addEventListener('click', saveBin);
+    $('#btnRelocate').addEventListener('click', function () {
+      state.draftPinned = false;
+      $('#markCoord').textContent = '重新定位中…';
+      syncWatch();
+      getPos(15000).then(function (p) {
+        onGeoOk(p);
+      }).catch(function (e) { $('#markErr').textContent = geoErrText(e); });
+    });
+    $('#btnLocate').addEventListener('click', locateMe);
+    bindPhotoPickers();
+    bindDevMode();        // 先定开发者状态，底图设置再据此渲染
+    bindBaseSettings();
+    $('#btnCancelMark').addEventListener('click', cancelMark);
+    $('#btnEdit').addEventListener('click', openEdit);
+    $('#btnEditSave').addEventListener('click', saveEdit);
+    $('#btnDelete').addEventListener('click', removeBin);
+
+    $('#tabMap').addEventListener('click', function () {
+      if (state.marking) cancelMark();
+      closeAllSheets();
+      setTab('tabMap');
+    });
+    $('#tabList').addEventListener('click', function () { closeAllSheets(); setTab('tabList'); renderList(); openSheet('sheetList'); });
+    $('#tabMe').addEventListener('click', function () { closeAllSheets(); setTab('tabMe'); openSheet('sheetMe'); });
+
+    $('#btnExport').addEventListener('click', exportCsv);
+    // 同一个按钮：登录状态下是「退出登录」，未登录时是「登录 / 注册」
+    $('#btnLogout').addEventListener('click', function () {
+      if (state.session) logout(); else openLogin();
+    });
+
+    var ctxMask = uiCtx(LOGIN_UI.mask);
+    $('#btnWechat').addEventListener('click', function () { wechatLogin(ctxMask); });
+    $('#btnSendCode').addEventListener('click', function () { sendCode(ctxMask); });
+    $('#btnPhoneLogin').addEventListener('click', function () { phoneLogin(ctxMask); });
+    $('#btnCloseLogin').addEventListener('click', function () { $('#maskLogin').classList.remove('open'); });
+
+    // 我的面板：扫码分享
+    $('#btnCopyLink').addEventListener('click', copyLink);
+    $('#btnQrSave').addEventListener('click', saveQr);
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (b) {
+      b.addEventListener('click', function () {
+        var id = b.dataset.close;
+        if (id === 'sheetMark') { cancelMark(); return; }
+        closeSheet(id);
+        setTab('tabMap');
+      });
+    });
+
+    $('#maskLogin').addEventListener('click', function (e) {
+      if (e.target === $('#maskLogin')) $('#maskLogin').classList.remove('open');
+    });
+
+    // 切到后台就停定位（省电），回前台再恢复
+    document.addEventListener('visibilitychange', syncWatch);
+  }
+
+  var curTab = 'tabMap';
+  function setTab(id) {
+    curTab = id;
+    ['tabMap', 'tabList', 'tabMe'].forEach(function (t) { $('#' + t).classList.toggle('on', t === id); });
+    syncWatch();
+  }
+  function closeAllSheets() {
+    ['sheetMark', 'sheetDetail', 'sheetEdit', 'sheetList', 'sheetMe'].forEach(closeSheet);
+  }
+
+  /* 地图和界面先跑起来，不等云服务 SDK——否则 SDK 一到手慢，
+     整个页面就是一块卡住的灰屏。数据等 SDK 到位后再补上。 */
+  /* 提前问一下浏览器有没有定位权限：被拒绝时立刻说明，
+     不用等十几秒超时才发现“什么都没发生”。 */
+  function probeGeoPermission() {
+    if (!navigator.permissions || !navigator.permissions.query) return;
+    try {
+      navigator.permissions.query({ name: 'geolocation' }).then(function (st) {
+        if (st.state === 'denied') {
+          geoDenied = true;
+          setGpsChip('<b>定位权限被拒绝</b><br><span class="sub">请在浏览器里允许本站定位</span>', true);
+        }
+        st.onchange = function () {
+          geoDenied = st.state !== 'granted';
+          syncWatch();
+        };
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
+  /* 开屏：每个浏览器会话只出现一次。登录已提到这一页，也可以游客身份直接进入；
+     已登录的人进来会自动跳过，点空白处也能关掉。 */
+  var splashOpen = false;
+
+  function initSplash() {
+    var sp = $('#splash');
+    if (!sp) return;
+    // 微信环境先给提示：定位与相机会被微信内置浏览器限制
+    if (IS_WX) {
+      var wx = $('#splashWx');
+      if (wx) wx.hidden = false;
+      // 微信里点「微信扫码登录」等于用微信扫自己的码，必然失败，直接收起来
+      var sWx = $('#sWxWrap');
+      if (sWx) sWx.hidden = true;
+      var mWx = $('#mWxWrap');
+      if (mWx) mWx.hidden = true;
+    }
+    var seen = false;
+    try { seen = sessionStorage.getItem(LS_SPLASH) === '1'; } catch (e) {}
+    if (seen) { sp.classList.add('hide'); return; }
+
+    splashOpen = true;
+    var ctx = uiCtx(LOGIN_UI.splash);
+    $('#sBtnWechat').addEventListener('click', function () { wechatLogin(ctx); });
+    $('#sBtnSend').addEventListener('click', function () { sendCode(ctx); });
+    $('#sBtnLogin').addEventListener('click', function () { phoneLogin(ctx); });
+    $('#btnEnter').addEventListener('click', function () {
+      enterApp();
+      toast('以游客身份进入，标记时会提示登录');
+    });
+    sp.addEventListener('click', function (e) { if (e.target === sp) enterApp(); });
+  }
+
+  function enterApp() {
+    var sp = $('#splash');
+    if (!sp || !splashOpen) return;
+    splashOpen = false;
+    sp.classList.add('hide');
+    try { sessionStorage.setItem(LS_SPLASH, '1'); } catch (e) {}
+  }
+
+  function boot() {
+    if (!window.L) { toast('地图组件加载失败，请下拉刷新'); return; }
+    initSplash();
+    initMap();
+    bindUI();
+    setGpsChip('<b>定位中…</b>');   // 立刻给出反馈，避免“页面毫无反应”
+    probeGeoPermission();
+    waitCloud(0);
+  }
+
+  function waitCloud(tries) {
+    if (!window.WorkBuddyCloud) {
+      if (tries > 300) { toast('云服务加载失败，请下拉刷新'); return; }
+      setTimeout(function () { waitCloud(tries + 1); }, 100);
+      return;
+    }
+    cloud = window.WorkBuddyCloud.createWorkBuddyCloud(PUBLIC_CONFIG);
+
+    // 微信登录回调必须在任何鉴权判断之前无条件处理
+    Promise.resolve()
+      .then(function () { return cloud.auth.handleWechatWebCallback(); })
+      .then(function (r) {
+        if (r && r.data) {
+          history.replaceState(null, '', location.pathname);
+          toast('登录成功');
+        }
+      })
+      .catch(function () {})
+      .then(function () { return refreshSession(); })
+      .then(function () { return loadBins(); })
+      .then(function () { autoLocate(); });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>
